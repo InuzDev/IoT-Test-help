@@ -18,6 +18,14 @@
 // Motor speed constants
 #define MOTOR_SPEED 200 // PWM value (0-255)
 
+// Function definition to avoid "this function wasn't defined here"
+void moveForward();
+void moveBackward();
+void turnLeft();
+void turnRight();
+void stopMotors();
+int getDistance();
+
 void setup()
 {
   // Initialize Serial communication
