@@ -1,358 +1,172 @@
-#include <L298NX2.h>
-#include <DHT.h>
-#include <Servo.h>
+#include <Arduino.h>
 
-// ====== Constants ====== //
-#define CANNON_SERVO_PIN 13
-#define DHTPIN A1
-#define DHTTYPE DHT11
-#define PUMP_EN 2   // Water pump
-#define PUMP_IN1 11 // Control pin 1
-#define PUMP_IN2 1  // control pin 2
-#define ENA 5
-#define IN1 3
-#define IN2 4
-#define ENB 8
-#define IN3 6
-#define IN4 7
+// Basic Robot Code - Motors + Ultrasonic Sensor
+// L298N Motor Driver + HC-SR04 Ultrasonic Sensor
+
+// L298N Motor Driver Pins
+#define ENA 5 // Enable A - PWM pin for left motor speed
+#define IN1 3 // Input 1 - Left motor direction
+#define IN2 4 // Input 2 - Left motor direction
+#define ENB 8 // Enable B - PWM pin for right motor speed
+#define IN3 6 // Input 3 - Right motor direction
+#define IN4 7 // Input 4 - Right motor direction
+
+// HC-SR04 Ultrasonic Sensor Pins
 #define TRIG_PIN 9
-#define FLAME_SENSOR_PIN 12
 #define ECHO_PIN 10
 
-const int DISTANCIA_SEGURA = 30;
-const int DISTANCIA_ESQUIVAR = 15;
-const int VELOCIDAD_NORMAL = 200;
-const int VELOCIDAD_GIRO = 150;
-const int VELOCIDAD_LENTA = 120;
-const int TIMEOUT_ULTRASONICO = 25000;
+// Motor speed constants
+#define MOTOR_SPEED 200 // PWM value (0-255)
 
-const long SENSOR_INTERVAL = 100;
-const long MOVE_INTERVAL = 50;
-const int MAX_LECTURAS_INVALIDAS = 3;
-
-bool fireByTemperature = false;
-Servo cannonServo;
-int cannonAngle = 90; // Cannon angle default
-
-// ====== Temp Sensor ===== //
-DHT dht(DHTPIN, DHTTYPE);
-const float FIRE_TEMP_THRESHOLD = 50.0;
-
-// ====== Enums ====== //
-enum RobotState
-{
-  MOVING_FORWARD,
-  AVOIDING_OBSTACLE,
-  TURNING_LEFT,
-  TURNING_RIGHT,
-  BACKING_UP
-};
-
-// ====== Global Variables ====== //
-L298NX2 motors(ENA, IN1, IN2, ENB, IN3, IN4);
-RobotState currentState = MOVING_FORWARD;
-unsigned long stateStartTime = 0;
-unsigned long previousMoveMillis = 0;
-unsigned long previousSensorMillis = 0;
-
-int lecturas[5] = {100, 100, 100, 100, 100};
-int indice_lectura = 0;
-int distancia_anterior = 100;
-int lecturas_invalidas = 0;
-
-// ====== Function Declarations ====== //
-void activatePump(int speed);
-void deactivatePump();
-void aimCannon(int angle);
-void sweepCannon();
-int medirDistancia();
-int obtenerDistanciaFiltrada();
-void moverAutonomo(int distancia, unsigned long currentTime);
-void changeState(RobotState newState, unsigned long currentTime);
-String getStateString(RobotState state);
-
-// ====== Setup ====== //
 void setup()
 {
-  dht.begin();
-  pinMode(FLAME_SENSOR_PIN, INPUT);
-  pinMode(TRIG_PIN, OUTPUT);
-  pinMode(ECHO_PIN, INPUT);
+  // Initialize Serial communication
   Serial.begin(9600);
 
-  // Water pump
-  pinMode(PUMP_EN, OUTPUT);
-  pinMode(PUMP_IN1, OUTPUT);
-  pinMode(PUMP_IN2, OUTPUT);
+  // Set motor pins as outputs
+  pinMode(ENA, OUTPUT);
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(ENB, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
 
-  // Ensure pump is off at start
-  digitalWrite(PUMP_IN1, LOW);
-  digitalWrite(PUMP_IN1, LOW);
-  analogWrite(PUMP_EN, 0);
+  // Set ultrasonic sensor pins
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
 
-  cannonServo.attach(CANNON_SERVO_PIN);
-  cannonServo.write(cannonAngle);
+  // Stop motors initially
+  stopMotors();
 
-  motors.setSpeed(VELOCIDAD_NORMAL);
-  motors.stop();
-
-  Serial.println("🤖 Robot Evitador de Obstáculos Iniciado");
+  Serial.println("🤖 Basic Robot Initialized");
+  Serial.println("Motors: L298N | Sensor: HC-SR04");
   delay(1000);
-  stateStartTime = millis();
 }
 
-// ====== Main Loop ====== //
 void loop()
 {
-  unsigned long currentMillis = millis();
-  static int distancia_actual = 100;
+  // Read distance from ultrasonic sensor
+  int distance = getDistance();
 
-  // Check flame
-  bool flameDetected = digitalRead(FLAME_SENSOR_PIN) == LOW; // or HIGH depending on your sensor
+  // Print distance reading
+  Serial.print("Distance: ");
+  Serial.print(distance);
+  Serial.println(" cm");
 
-  // Check temp
-  float temperature = dht.readTemperature();
-  if (isnan(temperature))
+  // Simple behavior: move forward if clear, stop if obstacle
+  if (distance > 20)
   {
-    Serial.println("⚠ Error reading temperature");
+    moveForward();
+    Serial.println("Moving forward");
   }
   else
   {
-    Serial.print("🌡 Temp: ");
-    Serial.print(temperature);
-    Serial.println(" °C");
-    fireByTemperature = (temperature >= FIRE_TEMP_THRESHOLD);
-    delay(1000);
+    stopMotors();
+    Serial.println("Obstacle detected - stopping");
   }
 
-  bool fireDetected = flameDetected || fireByTemperature;
-
-  if (!fireDetected)
-  {
-    motors.stop();
-    Serial.println("❌ No fire detected - robot paused");
-    delay(1000);
-    return;
-  }
-
-  if (flameDetected)
-  {
-    activatePump(35);
-  }
-  else
-  {
-    deactivatePump();
-  }
-
-  // Ultrasonic reading
-  if (currentMillis - previousSensorMillis >= SENSOR_INTERVAL)
-  {
-    previousSensorMillis = currentMillis;
-    distancia_actual = obtenerDistanciaFiltrada();
-
-    Serial.print("📏 Distancia: ");
-    Serial.print(distancia_actual);
-    Serial.print("cm | Estado: ");
-    Serial.println(getStateString(currentState));
-  }
-
-  // Movement logic
-  if (currentMillis - previousMoveMillis >= MOVE_INTERVAL)
-  {
-    previousMoveMillis = currentMillis;
-    moverAutonomo(distancia_actual, currentMillis);
-  }
+  delay(500); // Wait half second before next reading
 }
 
-void aimCannon(int angle)
+// === MOTOR CONTROL FUNCTIONS ===
+
+void moveForward()
 {
-  cannonAngle = constrain(angle, 0, 180);
-  cannonServo.write(cannonAngle);
+  // Set motor speed
+  analogWrite(ENA, MOTOR_SPEED);
+  analogWrite(ENB, MOTOR_SPEED);
+
+  // Left motor forward: IN1=HIGH, IN2=LOW
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+
+  // Right motor forward: IN3=HIGH, IN4=LOW
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
 }
 
-void sweepCannon()
+void moveBackward()
 {
-  for (int pos = 60; pos <= 120; pos += 5)
-  {
-    aimCannon(pos);
-    delay(100);
-  }
-  for (int pos = 120; pos >= 60; pos -= 5)
-  {
-    aimCannon(pos);
-    delay(100);
-  }
+  // Set motor speed
+  analogWrite(ENA, MOTOR_SPEED);
+  analogWrite(ENB, MOTOR_SPEED);
+
+  // Left motor backward: IN1=LOW, IN2=HIGH
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+
+  // Right motor backward: IN3=LOW, IN4=HIGH
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
 }
 
-void activatePump(int speed = 255)
+void turnLeft()
 {
-  digitalWrite(PUMP_IN1, HIGH);
-  digitalWrite(PUMP_IN2, LOW);
-  analogWrite(PUMP_EN, speed); // Max = 255
-  Serial.println("💧 Pump Activated");
+  // Set motor speed
+  analogWrite(ENA, MOTOR_SPEED);
+  analogWrite(ENB, MOTOR_SPEED);
+
+  // Left motor backward: IN1=LOW, IN2=HIGH
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+
+  // Right motor forward: IN3=HIGH, IN4=LOW
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
 }
 
-void deactivatePump()
+void turnRight()
 {
-  digitalWrite(PUMP_IN1, LOW);
-  digitalWrite(PUMP_IN2, LOW);
-  analogWrite(PUMP_EN, 0);
-  Serial.println("🛑 Pump Deactivated");
+  // Set motor speed
+  analogWrite(ENA, MOTOR_SPEED);
+  analogWrite(ENB, MOTOR_SPEED);
+
+  // Left motor forward: IN1=HIGH, IN2=LOW
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+
+  // Right motor backward: IN3=LOW, IN4=HIGH
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
 }
 
-// ====== Movimiento autónomo ====== //
-void moverAutonomo(int distancia, unsigned long currentTime)
+void stopMotors()
 {
-  unsigned long stateTime = currentTime - stateStartTime;
+  // Turn off motor speed
+  analogWrite(ENA, 0);
+  analogWrite(ENB, 0);
 
-  switch (currentState)
-  {
-  case MOVING_FORWARD:
-    if (distancia > DISTANCIA_SEGURA)
-    {
-      motors.setSpeed(VELOCIDAD_NORMAL);
-      motors.backward(); // ← This now actually moves forward
-    }
-    else if (distancia > DISTANCIA_ESQUIVAR)
-    {
-      motors.setSpeed(VELOCIDAD_LENTA);
-      motors.backward(); // ← Slow forward
-    }
-    else
-    {
-      Serial.println("🚫 Obstáculo detectado - iniciando maniobra");
-      changeState(BACKING_UP, currentTime);
-    }
-    break;
-
-  case BACKING_UP:
-    motors.setSpeed(VELOCIDAD_GIRO);
-    motors.forward(); // ← This now actually moves backward
-    if (stateTime >= 600)
-    {
-      if (random(2) == 0)
-      {
-        Serial.println("↺ Girando izquierda");
-        changeState(TURNING_LEFT, currentTime);
-      }
-      else
-      {
-        Serial.println("↻ Girando derecha");
-        changeState(TURNING_RIGHT, currentTime);
-      }
-    }
-    break;
-
-  case TURNING_LEFT:
-    motors.setSpeedA(VELOCIDAD_GIRO);
-    motors.setSpeedB(VELOCIDAD_GIRO);
-    motors.backwardA();
-    motors.forwardB();
-    if (stateTime >= 800)
-    {
-      Serial.println("✓ Giro completado - reanudando marcha");
-      changeState(MOVING_FORWARD, currentTime);
-    }
-    break;
-
-  case TURNING_RIGHT:
-    motors.setSpeedA(VELOCIDAD_GIRO);
-    motors.setSpeedB(VELOCIDAD_GIRO);
-    motors.backwardA(); // Was forwardA()
-    motors.forwardB();  // Was backwardB()
-    if (stateTime >= 800)
-    {
-      Serial.println("✓ Giro completado - reanudando marcha");
-      changeState(MOVING_FORWARD, currentTime);
-    }
-    break;
-
-  case AVOIDING_OBSTACLE:
-    changeState(MOVING_FORWARD, currentTime);
-    break;
-  }
+  // Set all motor pins to LOW
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
 }
 
-// ====== Cambiar estado ====== //
-void changeState(RobotState newState, unsigned long currentTime)
-{
-  currentState = newState;
-  stateStartTime = currentTime;
-  if (newState == MOVING_FORWARD)
-  {
-    motors.stop();
-    delay(100);
-  }
-}
+// === ULTRASONIC SENSOR FUNCTION ===
 
-// ====== Mostrar estado en texto ====== //
-String getStateString(RobotState state)
+int getDistance()
 {
-  switch (state)
-  {
-  case MOVING_FORWARD:
-    return "Avanzando";
-  case BACKING_UP:
-    return "Retrocediendo";
-  case TURNING_LEFT:
-    return "Girando Izq";
-  case TURNING_RIGHT:
-    return "Girando Der";
-  case AVOIDING_OBSTACLE:
-    return "Esquivando";
-  default:
-    return "Desconocido";
-  }
-}
-
-// ====== Medir distancia ====== //
-int medirDistancia()
-{
+  // Send ultrasonic pulse
   digitalWrite(TRIG_PIN, LOW);
   delayMicroseconds(2);
   digitalWrite(TRIG_PIN, HIGH);
   delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
 
-  long duration = pulseIn(ECHO_PIN, HIGH, TIMEOUT_ULTRASONICO);
-  if (duration == 0)
-    return -1;
+  // Read the echo
+  long duration = pulseIn(ECHO_PIN, HIGH);
 
+  // Calculate distance in centimeters
+  // Speed of sound = 343 meters/second = 0.0343 cm/microsecond
+  // Distance = (time * speed) / 2 (divided by 2 because sound travels to object and back)
   int distance = (duration * 0.0343) / 2;
+
+  // Return distance (limit to reasonable range)
   if (distance < 2 || distance > 400)
-    return -1;
+  {
+    return 400; // Return max distance if out of range
+  }
 
   return distance;
-}
-
-// ====== Obtener distancia filtrada ====== //
-int obtenerDistanciaFiltrada()
-{
-  int lectura_actual = medirDistancia();
-
-  if (lectura_actual > 0)
-  {
-    lecturas[indice_lectura] = lectura_actual;
-    indice_lectura = (indice_lectura + 1) % 5;
-
-    long suma = 0;
-    for (int i = 0; i < 5; i++)
-      suma += lecturas[i];
-    int promedio = suma / 5;
-
-    int diferencia = abs(promedio - distancia_anterior);
-    if (diferencia > 50 && distancia_anterior != 100)
-      return distancia_anterior;
-
-    distancia_anterior = promedio;
-    lecturas_invalidas = 0;
-    return promedio;
-  }
-  else
-  {
-    lecturas_invalidas++;
-    if (lecturas_invalidas >= MAX_LECTURAS_INVALIDAS)
-      return DISTANCIA_SEGURA + 10;
-    return distancia_anterior;
-  }
 }
