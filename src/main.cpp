@@ -36,7 +36,7 @@ int cannonAngle = 90; // Cannon angle default
 
 // ====== Temp Sensor ===== //
 DHT dht(DHTPIN, DHTTYPE);
-const float FIRE_TEMP_THRESHOLD = 15.0;
+const float FIRE_TEMP_THRESHOLD = 400.0;
 
 // ====== Enums ====== //
 enum RobotState
@@ -87,7 +87,7 @@ void setup()
 
   // Ensure pump is off at start
   digitalWrite(PUMP_IN1, LOW);
-  digitalWrite(PUMP_IN1, LOW);
+  digitalWrite(PUMP_IN2, LOW);
   analogWrite(PUMP_EN, 0);
 
   cannonServo.attach(CANNON_SERVO_PIN);
@@ -107,44 +107,24 @@ void loop()
   unsigned long currentMillis = millis();
   static int distancia_actual = 100;
 
-  // Check flame
-  bool flameDetected = digitalRead(FLAME_SENSOR_PIN) == LOW; // or HIGH depending on your sensor
+  // Flame detection
+  bool flameDetected = digitalRead(FLAME_SENSOR_PIN) == LOW;
 
-  // Check temp
+  // Temperature
   float temperature = dht.readTemperature();
   if (isnan(temperature))
   {
     Serial.println("⚠ Error reading temperature");
-  }
-  else
-  {
-    Serial.print("🌡 Temp: ");
-    Serial.print(temperature);
-    Serial.println(" °C");
-    fireByTemperature = (temperature >= FIRE_TEMP_THRESHOLD);
-    delay(1000);
-  }
-
-  bool fireDetected = flameDetected || fireByTemperature;
-
-  if (!fireDetected)
-  {
-    motors.stop();
-    Serial.println("❌ No fire detected - robot paused");
-    delay(1000);
     return;
   }
 
-  if (flameDetected)
-  {
-    activatePump(35);
-  }
-  else
-  {
-    deactivatePump();
-  }
+  Serial.print("🌡 Temp: ");
+  Serial.print(temperature);
+  Serial.println(" °C");
 
-  // Ultrasonic reading
+  fireByTemperature = (temperature >= FIRE_TEMP_THRESHOLD);
+  bool fireDetected = flameDetected || fireByTemperature;
+
   if (currentMillis - previousSensorMillis >= SENSOR_INTERVAL)
   {
     previousSensorMillis = currentMillis;
@@ -156,11 +136,34 @@ void loop()
     Serial.println(getStateString(currentState));
   }
 
-  // Movement logic
-  if (currentMillis - previousMoveMillis >= MOVE_INTERVAL)
+  if (fireDetected)
   {
-    previousMoveMillis = currentMillis;
-    moverAutonomo(distancia_actual, currentMillis);
+    Serial.println("🔥 Fire detected!");
+
+    if (distancia_actual <= 20)
+    {
+      // Stop and extinguish
+      motors.stop();
+      sweepCannon();
+      activatePump(200);
+      delay(3000);
+      deactivatePump();
+    }
+    else
+    {
+      // Approach slowly
+      motors.setSpeed(VELOCIDAD_LENTA);
+      motors.backward();
+    }
+  }
+  else
+  {
+    // No fire: normal obstacle-avoiding logic
+    if (currentMillis - previousMoveMillis >= MOVE_INTERVAL)
+    {
+      previousMoveMillis = currentMillis;
+      moverAutonomo(distancia_actual, currentMillis);
+    }
   }
 }
 
