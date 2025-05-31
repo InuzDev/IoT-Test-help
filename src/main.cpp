@@ -258,8 +258,8 @@ void moverAutonomo(int distancia, unsigned long currentTime)
   case TURNING_RIGHT:
     motors.setSpeedA(VELOCIDAD_GIRO);
     motors.setSpeedB(VELOCIDAD_GIRO);
-    motors.backwardA(); // Was forwardA()
-    motors.forwardB();  // Was backwardB()
+    motors.backwardA();
+    motors.forwardB();
     if (stateTime >= 800)
     {
       Serial.println("✓ Giro completado - reanudando marcha");
@@ -319,6 +319,8 @@ int medirDistancia()
     return -1;
 
   int distance = (duration * 0.0343) / 2;
+
+  // Ignore impossible readings
   if (distance < 2 || distance > 400)
     return -1;
 
